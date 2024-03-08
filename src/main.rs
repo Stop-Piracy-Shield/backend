@@ -1,19 +1,26 @@
 use diesel::prelude::*;
-use stop_piracy_shield::models::*;
 use stop_piracy_shield::establish_connection;
+use stop_piracy_shield::models::*;
 
-fn get_signatures() -> Vec<Signature> {
+#[macro_use]
+extern crate rocket;
+use rocket::serde::json::Json;
+
+#[get("/signatures")]
+fn get_signatures() -> Json<Vec<PublicSignature>> {
     use stop_piracy_shield::schema::signatures::dsl::*;
-
     let connection = &mut establish_connection();
-    let results = signatures
-        .select(Signature::as_select())
-        .load(connection)
-        .expect("Error loading signatures");
 
-    dbg!(results)
+    signatures
+        .filter(verified.eq(true))
+        .order(created_at.desc())
+        .select(PublicSignature::as_select())
+        .load(connection)
+        .expect("Error loading signatures")
+        .into()
 }
 
-fn main() {
-    get_signatures();
+#[launch]
+fn rocket() -> _ {
+    rocket::build().mount("/", routes![get_signatures])
 }
