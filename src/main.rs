@@ -1,4 +1,5 @@
 use diesel::prelude::*;
+use rocket::http::Status;
 use stop_piracy_shield::establish_connection;
 use stop_piracy_shield::models::*;
 
@@ -20,7 +21,21 @@ fn get_signatures() -> Json<Vec<PublicSignature>> {
         .into()
 }
 
+#[post("/signatures", data = "<signature>")]
+fn new_signature(signature: Json<SignatureForm>) -> Status {
+    use stop_piracy_shield::schema::signatures;
+    let connection = &mut establish_connection();
+
+    diesel::insert_into(signatures::table)
+        .values(&*signature)
+        .returning(PublicSignature::as_returning())
+        .get_result(connection)
+        .expect("Error saving signature");
+    ();
+    Status::Ok
+}
+
 #[launch]
 fn rocket() -> _ {
-    rocket::build().mount("/", routes![get_signatures])
+    rocket::build().mount("/", routes![get_signatures, new_signature])
 }
