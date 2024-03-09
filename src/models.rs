@@ -6,7 +6,7 @@ use rocket::{
 };
 use uuid;
 
-#[derive(Queryable, Selectable, Identifiable)]
+#[derive(Debug, Queryable, Selectable, Insertable, Identifiable)]
 #[diesel(primary_key(id))]
 #[diesel(table_name = crate::schema::signatures)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
@@ -41,4 +41,11 @@ pub struct SignatureForm {
     last_name: String,
     org: Option<String>,
     email: String,
+}
+
+#[derive(AsChangeset)]
+#[diesel(table_name = crate::schema::signatures)]
+pub struct SignatureFormVerify {
+    pub verified: bool,
+    pub verified_at: Option<NaiveDateTime>,
 }
