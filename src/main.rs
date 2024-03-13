@@ -33,6 +33,23 @@ async fn get_signatures(conn: DbConnection) -> Json<Vec<PublicSignature>> {
 async fn new_signature(conn: DbConnection, signature: Json<SignatureForm>) -> Status {
     use crate::signatures::dsl::*;
 
+    let email_to = signature.0.email.clone();
+    if conn
+        .run(move |c: &mut diesel::PgConnection| {
+            signatures
+                .filter(email.eq(&email_to))
+                .select(PublicSignature::as_select())
+                .load(c)
+                .expect("Error loading signatures")
+                .len()
+        })
+        .await
+        > 0
+    {
+        // You can't sign twice with the same email
+        return Status::Forbidden;
+    }
+
     let signature = conn
         .run(move |c: &mut diesel::PgConnection| {
             diesel::insert_into(signatures)
