@@ -7,8 +7,8 @@ use rocket::serde::json::Json;
 use rocket_sync_db_pools::database;
 use uuid::Uuid;
 
-use stop_piracy_shield::models::*;
 use stop_piracy_shield::schema::signatures;
+use stop_piracy_shield::{models::*, send_confirmation_email};
 
 #[database("postgres")]
 struct DbConnection(diesel::PgConnection);
@@ -31,15 +31,29 @@ async fn get_signatures(conn: DbConnection) -> Json<Vec<PublicSignature>> {
 
 #[post("/signatures", data = "<signature>")]
 async fn new_signature(conn: DbConnection, signature: Json<SignatureForm>) -> Status {
-    conn.run(move |c: &mut diesel::PgConnection| {
-        diesel::insert_into(signatures::table)
-            .values(&*signature)
-            .returning(PublicSignature::as_returning())
-            .get_result(c)
-            .expect("Error saving signature")
-    })
-    .await;
-    Status::Ok
+    use crate::signatures::dsl::*;
+
+    let signature = conn
+        .run(move |c: &mut diesel::PgConnection| {
+            diesel::insert_into(signatures)
+                .values(&*signature)
+                .returning(Signature::as_returning())
+                .get_result(c)
+                .expect("Error saving signature")
+        })
+        .await;
+
+    match send_confirmation_email(signature) {
+        Ok(_) => Status::Ok,
+        Err(signature_id) => {
+            let _ = conn
+                .run(move |c: &mut diesel::PgConnection| {
+                    diesel::delete(signatures.find(signature_id)).execute(c)
+                })
+                .await;
+            Status::BadRequest
+        }
+    }
 }
 
 #[put("/signatures/<signature_id>/verify")]
