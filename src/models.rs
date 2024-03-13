@@ -30,6 +30,7 @@ pub struct PublicSignature {
     last_name: String,
     org: Option<String>,
     created_at: NaiveDateTime,
+    message: Option<String>,
 }
 
 #[derive(FromForm, Deserialize, Queryable, Insertable)]
@@ -40,7 +41,8 @@ pub struct SignatureForm {
     first_name: String,
     last_name: String,
     org: Option<String>,
-    email: String,
+    pub email: String,
+    message: Option<String>,
 }
 
 #[derive(AsChangeset)]

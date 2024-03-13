@@ -10,5 +10,6 @@ diesel::table! {
         created_at -> Timestamp,
         verified -> Bool,
         verified_at -> Nullable<Timestamp>,
+        message -> Nullable<Text>,
     }
 }
