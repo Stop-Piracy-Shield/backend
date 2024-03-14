@@ -7,5 +7,5 @@ RUN cargo build --locked --release
 
 FROM debian:bookworm-slim AS final
 COPY --from=build /app/target/release/stop-piracy-shield /bin/stop-piracy-shield
-RUN apt-get update && apt install -y openssl libpq5
+RUN apt-get update && apt install -y openssl libpq5 ca-certificates
 CMD ["/bin/stop-piracy-shield"]
