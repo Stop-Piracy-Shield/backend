@@ -10,7 +10,7 @@ use lettre::{Message, SmtpTransport, Transport};
 
 struct EmailConfiguration {
     from: String,
-    host: String,
+    url: String,
     username: String,
     password: String,
 }
@@ -19,7 +19,7 @@ impl EmailConfiguration {
     fn read_env() -> Result<Self, VarError> {
         Ok(Self {
             from: std::env::var("SMTP_FROM")?,
-            host: std::env::var("SMTP_HOST")?,
+            url: std::env::var("SMTP_URL")?,
             username: std::env::var("SMTP_USERNAME")?,
             password: std::env::var("SMTP_PASSWORD")?,
         })
@@ -59,7 +59,7 @@ pub fn send_confirmation_email(signature: models::Signature) -> Result<(), uuid:
     let email = build_email(&signature, &config)?;
 
     let creds = Credentials::new(config.username, config.password);
-    let mailer = SmtpTransport::relay(&config.host)
+    let mailer = SmtpTransport::from_url(&config.url)
         .map_err(|_| signature.id)?
         .credentials(creds)
         .build();
