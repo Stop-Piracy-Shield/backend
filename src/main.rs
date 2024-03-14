@@ -1,5 +1,7 @@
 use diesel::prelude::*;
 use rocket::http::Status;
+use rocket::{Build, Rocket};
+use rocket::fairing::AdHoc;
 
 #[macro_use]
 extern crate rocket;
@@ -97,6 +99,20 @@ async fn verify_signature(conn: DbConnection, signature_id: &str) -> Status {
     .await
 }
 
+
+async fn run_migrations(rocket: Rocket<Build>) -> Rocket<Build> {
+    use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+
+    const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
+
+    DbConnection::get_one(&rocket).await
+        .expect("database connection")
+        .run(|conn| { conn.run_pending_migrations(MIGRATIONS).expect("diesel migrations"); })
+        .await;
+
+    rocket
+}
+
 #[launch]
 fn rocket() -> _ {
     rocket::build()
@@ -105,4 +121,5 @@ fn rocket() -> _ {
             routes![get_signatures, new_signature, verify_signature,],
         )
         .attach(DbConnection::fairing())
+        .attach(AdHoc::on_ignite("Run Migrations", run_migrations))
 }
