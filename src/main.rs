@@ -1,7 +1,7 @@
 use diesel::prelude::*;
+use rocket::fairing::AdHoc;
 use rocket::http::Status;
 use rocket::{Build, Rocket};
-use rocket::fairing::AdHoc;
 
 #[macro_use]
 extern crate rocket;
@@ -99,15 +99,41 @@ async fn verify_signature(conn: DbConnection, signature_id: &str) -> Status {
     .await
 }
 
+#[get("/signatures/<signature_id>")]
+async fn get_signature_by_id(
+    conn: DbConnection,
+    signature_id: &str,
+) -> Result<Json<PublicSignature>, Status> {
+    use crate::signatures::dsl::*;
+
+    let signature_uuid = match Uuid::parse_str(signature_id) {
+        Ok(u) => u,
+        Err(_) => return Err(Status::BadRequest),
+    };
+
+    conn.run(move |c: &mut diesel::PgConnection| {
+        signatures
+            .find(signature_uuid)
+            .select(PublicSignature::as_select())
+            .first::<PublicSignature>(c)
+    })
+    .await
+    .map(Json)
+    .map_err(|_| Status::NotFound)
+}
 
 async fn run_migrations(rocket: Rocket<Build>) -> Rocket<Build> {
     use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 
     const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
-    DbConnection::get_one(&rocket).await
+    DbConnection::get_one(&rocket)
+        .await
         .expect("database connection")
-        .run(|conn| { conn.run_pending_migrations(MIGRATIONS).expect("diesel migrations"); })
+        .run(|conn| {
+            conn.run_pending_migrations(MIGRATIONS)
+                .expect("diesel migrations");
+        })
         .await;
 
     rocket
@@ -118,7 +144,7 @@ fn rocket() -> _ {
     rocket::build()
         .mount(
             "/",
-            routes![get_signatures, new_signature, verify_signature,],
+            routes![get_signatures, new_signature, verify_signature, get_signature_by_id,],
         )
         .attach(DbConnection::fairing())
         .attach(AdHoc::on_ignite("Run Migrations", run_migrations))
