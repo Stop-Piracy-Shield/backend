@@ -6,7 +6,6 @@ use std::env::VarError;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 
-use lettre::transport::smtp::Error as SmtpError;
 use lettre::{Message, SmtpTransport, Transport};
 
 struct EmailConfiguration {
@@ -30,7 +29,7 @@ impl EmailConfiguration {
 fn build_email(
     signature: &models::Signature,
     config: &EmailConfiguration,
-) -> Result<Message, (Option<SmtpError>, uuid::Uuid)> {
+) -> Result<Message, uuid::Uuid> {
     let validation_url = format!("https://example.com/verifica-email?token={}", signature.id);
 
     Message::builder()
@@ -45,7 +44,7 @@ fn build_email(
             signature.first_name, signature.last_name, signature.email
         )
         .parse()
-        .map_err(|_| (None, signature.id))?)
+        .map_err(|_| signature.id)?)
         .subject("Verifica la firma. Lettera aperta contro gli eccessi di Piracy Shield")
         .header(ContentType::TEXT_HTML)
         .body(
@@ -57,23 +56,23 @@ fn build_email(
             ]
             .concat(),
         )
-        .map_err(|_| (None, signature.id))
+        .map_err(|_| signature.id)
 }
 
 pub fn send_confirmation_email(
     signature: models::Signature,
-) -> Result<(), (Option<SmtpError>, uuid::Uuid)> {
+) -> Result<(), uuid::Uuid> {
     let config = EmailConfiguration::read_env().expect("Error reading SMTP configuration");
     let email = build_email(&signature, &config)?;
 
     let creds = Credentials::new(config.username, config.password);
     let mailer = SmtpTransport::from_url(&config.url)
-        .map_err(|err| (Some(err), signature.id))?
+        .map_err(|_| signature.id)?
         .credentials(creds)
         .build();
 
     mailer
         .send(&email)
-        .map_err(|err| (Some(err), signature.id))
+        .map_err(|_| signature.id)
         .map(|_| ())
 }

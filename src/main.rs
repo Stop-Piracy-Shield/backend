@@ -5,7 +5,7 @@ use rocket::{Build, Rocket};
 
 #[macro_use]
 extern crate rocket;
-use rocket::serde::json::{json, Json, Value};
+use rocket::serde::json::{Json, Value};
 use rocket_sync_db_pools::database;
 use uuid::Uuid;
 
@@ -16,11 +16,17 @@ use stop_piracy_shield::{models::*, send_confirmation_email};
 struct DbConnection(diesel::PgConnection);
 
 #[macro_export]
+macro_rules! ok_response {
+    () => {
+        rocket::serde::json::Json(rocket::serde::json::json!({ "result": true }))
+    };
+}
+#[macro_export]
 macro_rules! error_response {
     ($msg:expr, $status:expr) => {
         (
             $status,
-            rocket::serde::json::Json(rocket::serde::json::json!({ "ok": false, "error": $msg }))
+            rocket::serde::json::Json(rocket::serde::json::json!({ "result": false, "error": $msg }))
         )
     };
 }
@@ -84,24 +90,17 @@ async fn new_signature(
 
     match signature_result {
         Ok(Some(signature)) => match send_confirmation_email(signature) {
-            Ok(_) => Ok(Json(json!({"ok": true}))),
-            Err((maybe_err, signature_id)) => {
+            Ok(_) => Ok(ok_response!()),
+            Err(signature_id) => {
                 let _ = conn
                     .run(move |c: &mut diesel::PgConnection| {
                         diesel::delete(signatures.find(signature_id)).execute(c)
                     })
                     .await;
-                if let Some(err) = maybe_err {
-                    Err((
-                        Status::BadRequest,
-                        Json(json!({"ok": false, "error": err.to_string()})),
-                    ))
-                } else {
-                    Err(error_response!(
-                        "Failed to send confirmation email",
-                        Status::InternalServerError
-                    ))
-                }
+                Err(error_response!(
+                    "Failed to send confirmation email",
+                    Status::InternalServerError
+                ))
             }
         },
         Ok(None) => Err(error_response!(
@@ -132,7 +131,7 @@ async fn verify_signature(
                 verified_at: Some(chrono::Utc::now().naive_utc()),
             })
             .execute(c)
-            .map(|_| Json(json!({"ok": true})))
+            .map(|_| ok_response!())
             .map_err(|_| error_response!("Signature not found", Status::NotFound))
     })
     .await
