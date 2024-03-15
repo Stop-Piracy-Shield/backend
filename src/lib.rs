@@ -6,6 +6,7 @@ use std::env::VarError;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 
+use lettre::transport::smtp::Error as SmtpError;
 use lettre::{Message, SmtpTransport, Transport};
 
 struct EmailConfiguration {
@@ -29,17 +30,22 @@ impl EmailConfiguration {
 fn build_email(
     signature: &models::Signature,
     config: &EmailConfiguration,
-) -> Result<Message, uuid::Uuid> {
+) -> Result<Message, (Option<SmtpError>, uuid::Uuid)> {
     let validation_url = format!("https://example.com/verifica-email?token={}", signature.id);
 
     Message::builder()
-        .from(config.from.parse().map_err(|_| signature.id)?)
+        .from(
+            config
+                .from
+                .parse()
+                .expect("Error parsing SMTP_FROM address"),
+        )
         .to(format!(
             "{} {} <{}>",
             signature.first_name, signature.last_name, signature.email
         )
         .parse()
-        .map_err(|_| signature.id)?)
+        .map_err(|_| (None, signature.id))?)
         .subject("Verifica la firma. Lettera aperta contro gli eccessi di Piracy Shield")
         .header(ContentType::TEXT_HTML)
         .body(
@@ -51,18 +57,23 @@ fn build_email(
             ]
             .concat(),
         )
-        .map_err(|_| signature.id)
+        .map_err(|_| (None, signature.id))
 }
 
-pub fn send_confirmation_email(signature: models::Signature) -> Result<(), uuid::Uuid> {
-    let config = EmailConfiguration::read_env().map_err(|_| signature.id)?;
+pub fn send_confirmation_email(
+    signature: models::Signature,
+) -> Result<(), (Option<SmtpError>, uuid::Uuid)> {
+    let config = EmailConfiguration::read_env().expect("Error reading SMTP configuration");
     let email = build_email(&signature, &config)?;
 
     let creds = Credentials::new(config.username, config.password);
     let mailer = SmtpTransport::from_url(&config.url)
-        .map_err(|_| signature.id)?
+        .map_err(|err| (Some(err), signature.id))?
         .credentials(creds)
         .build();
 
-    mailer.send(&email).map_err(|_| signature.id).map(|_| ())
+    mailer
+        .send(&email)
+        .map_err(|err| (Some(err), signature.id))
+        .map(|_| ())
 }

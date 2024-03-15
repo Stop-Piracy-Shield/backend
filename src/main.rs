@@ -5,7 +5,7 @@ use rocket::{Build, Rocket};
 
 #[macro_use]
 extern crate rocket;
-use rocket::serde::json::Json;
+use rocket::serde::json::{json, Json, Value};
 use rocket_sync_db_pools::database;
 use uuid::Uuid;
 
@@ -14,6 +14,16 @@ use stop_piracy_shield::{models::*, send_confirmation_email};
 
 #[database("postgres")]
 struct DbConnection(diesel::PgConnection);
+
+#[macro_export]
+macro_rules! error_response {
+    ($msg:expr, $status:expr) => {
+        (
+            $status,
+            rocket::serde::json::Json(rocket::serde::json::json!({ "ok": false, "error": $msg }))
+        )
+    };
+}
 
 #[get("/signatures")]
 async fn get_signatures(conn: DbConnection) -> Json<Vec<PublicSignature>> {
@@ -32,69 +42,98 @@ async fn get_signatures(conn: DbConnection) -> Json<Vec<PublicSignature>> {
 }
 
 #[post("/signatures", data = "<signature>")]
-async fn new_signature(conn: DbConnection, signature: Json<SignatureForm>) -> Status {
+async fn new_signature(
+    conn: DbConnection,
+    signature: Json<SignatureForm>,
+) -> Result<Json<Value>, (Status, Json<Value>)> {
     use crate::signatures::dsl::*;
 
     let email_to = signature.0.email.clone();
-    if conn
+    let email_exists = conn
         .run(move |c: &mut diesel::PgConnection| {
             signatures
                 .filter(email.eq(&email_to))
-                .select(PublicSignature::as_select())
-                .load(c)
-                .expect("Error loading signatures")
-                .len()
+                .select(id)
+                .first::<Uuid>(c)
+                .optional()
         })
         .await
-        > 0
-    {
+        .map_err(|_| {
+            error_response!(
+                "Database error during email check",
+                Status::InternalServerError
+            )
+        })?;
+    if email_exists.is_some() {
         // You can't sign twice with the same email
-        return Status::Forbidden;
+        return Err(error_response!(
+            "Email already used for signing",
+            Status::Forbidden
+        ));
     }
 
-    let signature = conn
+    let signature_result = conn
         .run(move |c: &mut diesel::PgConnection| {
             diesel::insert_into(signatures)
                 .values(&*signature)
                 .returning(Signature::as_returning())
                 .get_result(c)
-                .expect("Error saving signature")
+                .optional()
         })
         .await;
 
-    match send_confirmation_email(signature) {
-        Ok(_) => Status::Ok,
-        Err(signature_id) => {
-            let _ = conn
-                .run(move |c: &mut diesel::PgConnection| {
-                    diesel::delete(signatures.find(signature_id)).execute(c)
-                })
-                .await;
+    match signature_result {
+        Ok(Some(signature)) => match send_confirmation_email(signature) {
+            Ok(_) => Ok(Json(json!({"ok": true}))),
+            Err((maybe_err, signature_id)) => {
+                let _ = conn
+                    .run(move |c: &mut diesel::PgConnection| {
+                        diesel::delete(signatures.find(signature_id)).execute(c)
+                    })
+                    .await;
+                if let Some(err) = maybe_err {
+                    Err((
+                        Status::BadRequest,
+                        Json(json!({"ok": false, "error": err.to_string()})),
+                    ))
+                } else {
+                    Err(error_response!(
+                        "Failed to send confirmation email",
+                        Status::InternalServerError
+                    ))
+                }
+            }
+        },
+        Ok(None) => Err(error_response!(
+            "Failed to save signature",
             Status::BadRequest
-        }
+        )),
+        Err(_) => Err(error_response!(
+            "Database error during signature saving",
+            Status::InternalServerError
+        )),
     }
 }
 
 #[put("/signatures/<signature_id>/verify")]
-async fn verify_signature(conn: DbConnection, signature_id: &str) -> Status {
+async fn verify_signature(
+    conn: DbConnection,
+    signature_id: &str,
+) -> Result<Json<Value>, (Status, Json<Value>)> {
     use crate::signatures::dsl::*;
 
-    let signature_uuid = match Uuid::parse_str(signature_id) {
-        Ok(u) => u,
-        Err(_) => return Status::BadRequest,
-    };
+    let signature_uuid = Uuid::parse_str(signature_id)
+        .map_err(|_| error_response!("Invalid signature id format", Status::BadRequest))?;
 
     conn.run(move |c: &mut diesel::PgConnection| {
-        match diesel::update(signatures.find(signature_uuid))
+        diesel::update(signatures.find(signature_uuid))
             .set(&SignatureFormVerify {
                 verified: true,
                 verified_at: Some(chrono::Utc::now().naive_utc()),
             })
             .execute(c)
-        {
-            Ok(_) => Status::Ok,
-            Err(_) => Status::NotFound,
-        }
+            .map(|_| Json(json!({"ok": true})))
+            .map_err(|_| error_response!("Signature not found", Status::NotFound))
     })
     .await
 }
@@ -103,14 +142,11 @@ async fn verify_signature(conn: DbConnection, signature_id: &str) -> Status {
 async fn get_signature_by_id(
     conn: DbConnection,
     signature_id: &str,
-) -> Result<Json<PublicSignature>, Status> {
+) -> Result<Json<PublicSignature>, (Status, Json<Value>)> {
     use crate::signatures::dsl::*;
 
-    let signature_uuid = match Uuid::parse_str(signature_id) {
-        Ok(u) => u,
-        Err(_) => return Err(Status::BadRequest),
-    };
-
+    let signature_uuid = Uuid::parse_str(signature_id)
+        .map_err(|_| error_response!("Invalid signature id format", Status::BadRequest))?;
     conn.run(move |c: &mut diesel::PgConnection| {
         signatures
             .find(signature_uuid)
@@ -119,7 +155,7 @@ async fn get_signature_by_id(
     })
     .await
     .map(Json)
-    .map_err(|_| Status::NotFound)
+    .map_err(|_| error_response!("Signature not found", Status::NotFound))
 }
 
 async fn run_migrations(rocket: Rocket<Build>) -> Rocket<Build> {
@@ -144,7 +180,12 @@ fn rocket() -> _ {
     rocket::build()
         .mount(
             "/",
-            routes![get_signatures, new_signature, verify_signature, get_signature_by_id,],
+            routes![
+                get_signatures,
+                new_signature,
+                verify_signature,
+                get_signature_by_id,
+            ],
         )
         .attach(DbConnection::fairing())
         .attach(AdHoc::on_ignite("Run Migrations", run_migrations))
