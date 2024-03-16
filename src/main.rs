@@ -10,7 +10,7 @@ use rocket_sync_db_pools::database;
 use uuid::Uuid;
 
 use stop_piracy_shield::schema::signatures;
-use stop_piracy_shield::{models::*, send_confirmation_email, generate_auth_token};
+use stop_piracy_shield::{models::*, send_confirmation_email, send_sign_email, generate_auth_token};
 
 
 #[database("postgres")]
@@ -93,11 +93,7 @@ async fn new_signature(
         Ok(Some(signature)) => match send_confirmation_email(signature) {
             Ok(_) => Ok(ok_response!()),
             Err(signature_id) => {
-                let _ = conn
-                    .run(move |c: &mut diesel::PgConnection| {
-                        diesel::delete(signatures.find(signature_id)).execute(c)
-                    })
-                    .await;
+                let _ = delete_signature(&conn, signature_id).await;
                 Err(error_response!(
                     "Failed to send confirmation email",
                     Status::InternalServerError
@@ -122,10 +118,10 @@ async fn verify_signature(
 ) -> Result<Json<Value>, (Status, Json<Value>)> {
     use crate::signatures::dsl::*;
 
-    let signature_uuid = validate_auth_token(&conn, auth_token, false).await?;
+    let signature = validate_auth_token(&conn, auth_token, false).await?;
 
     conn.run(move |c: &mut diesel::PgConnection| {
-        diesel::update(signatures.find(signature_uuid))
+        diesel::update(signatures.find(signature.id))
             .set(&SignatureFormVerify {
                 verified: true,
                 verified_at: Some(chrono::Utc::now().naive_utc()),
@@ -134,7 +130,27 @@ async fn verify_signature(
             .map(|_| ok_response!())
             .map_err(|_| error_response!("Signature not found", Status::NotFound))
     })
-    .await
+    .await?;
+
+    match send_sign_email(find_signature(&conn, signature.id).await?) {
+        Ok(_) => Ok(ok_response!()),
+        Err(signature_id) => {
+            let _ = delete_signature(&conn, signature_id).await;
+            Err(error_response!(
+                "Failed to send sign email",
+                Status::InternalServerError
+            ))
+        }
+    }
+}
+
+#[put("/signatures/<auth_token>/revoke")]
+async fn revoke_signature(
+    conn: DbConnection,
+    auth_token: &str,
+) -> Result<Json<Value>, (Status, Json<Value>)> {
+    let signature_uuid = validate_auth_token(&conn, auth_token, true).await?.id;
+    return delete_signature(&conn, signature_uuid).await;
 }
 
 #[get("/signatures/<signature_id>")]
@@ -181,13 +197,30 @@ async fn run_migrations(rocket: Rocket<Build>) -> Rocket<Build> {
     rocket
 }
 
+async fn find_signature(
+    conn: &DbConnection,
+    signature_uuid: Uuid
+) -> Result<Signature, (Status, Json<Value>)> {
+    use crate::signatures::dsl::*;
+    return match conn.run(move |c: &mut diesel::PgConnection| {
+        signatures
+        .find(signature_uuid)
+        .select(Signature::as_select())
+        .first::<Signature>(c)
+    }).await {
+        Ok(signature) => Ok(signature),
+        Err(_err) => return Err(error_response!(
+            "Signature not found",
+            Status::Forbidden
+        )),
+    };
+}
+
 async fn validate_auth_token(
     conn: &DbConnection,
     auth_token: &str,
     expected_verified_state: bool
-) -> Result<uuid::Uuid, (Status, Json<Value>)> {
-    use crate::signatures::dsl::*;
-
+) -> Result<Signature, (Status, Json<Value>)> {
     if auth_token.chars().count() != 100 {
         return Err(error_response!(
             "Invalid auth token format",
@@ -198,29 +231,32 @@ async fn validate_auth_token(
     let signature_uuid = Uuid::parse_str(&auth_token[..36])
     .map_err(|_| error_response!("Invalid signature id format", Status::BadRequest))?;
 
-    let signature = match conn.run(move |c: &mut diesel::PgConnection| {
-        signatures
-        .find(signature_uuid)
-        .select(Signature::as_select())
-        .first::<Signature>(c)
-    }).await {
-        Ok(signature) => signature,
-        Err(_err) => return Err(error_response!(
-            "Auth token is invalid",
-            Status::Forbidden
-        )),
-    };
-
+    let signature = find_signature(conn, signature_uuid).await?;
     let generated_auth_token = generate_auth_token(&signature);
 
     if auth_token.eq(&generated_auth_token) && expected_verified_state == signature.verified {
-        Ok(signature.id)
+        Ok(signature)
     } else {
         Err(error_response!(
             "Auth token is invalid",
             Status::Forbidden
         ))
     }
+}
+
+async fn delete_signature(
+    conn: &DbConnection,
+    signature_uuid: uuid::Uuid
+) -> Result<Json<Value>, (Status, Json<Value>)> {
+    use crate::signatures::dsl::*;
+
+    return conn.run(move |c: &mut diesel::PgConnection| {
+        diesel::delete(signatures.find(signature_uuid))
+        .execute(c)
+        .map(|_| ok_response!())
+        .map_err(|_| error_response!("Signature not found", Status::NotFound))
+    })
+    .await
 }
 
 #[launch]
@@ -232,6 +268,7 @@ fn rocket() -> _ {
                 get_signatures,
                 new_signature,
                 verify_signature,
+                revoke_signature,
                 get_signature_by_id,
             ],
         )

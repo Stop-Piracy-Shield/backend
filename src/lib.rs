@@ -14,6 +14,7 @@ struct EmailConfiguration {
     url: String,
     username: String,
     password: String,
+    website_url: String
 }
 
 impl EmailConfiguration {
@@ -23,6 +24,7 @@ impl EmailConfiguration {
             url: std::env::var("SMTP_URL")?,
             username: std::env::var("SMTP_USERNAME")?,
             password: std::env::var("SMTP_PASSWORD")?,
+            website_url: std::env::var("WEBSITE_URL")?,
         })
     }
 }
@@ -30,10 +32,9 @@ impl EmailConfiguration {
 fn build_email(
     signature: &models::Signature,
     config: &EmailConfiguration,
-    auth_token: String
+    subject: String,
+    body: String
 ) -> Result<Message, uuid::Uuid> {
-    let validation_url = format!("https://example.com/verifica-email?token={}", auth_token);
-
     Message::builder()
         .from(
             config
@@ -47,36 +48,66 @@ fn build_email(
         )
         .parse()
         .map_err(|_| signature.id)?)
-        .subject("Verifica la firma. Lettera aperta contro gli eccessi di Piracy Shield")
+        .subject(subject)
         .header(ContentType::TEXT_HTML)
-        .body(
-            [
-                "<h1>Lettera aperta contro gli eccessi di Piracy Shield</h1>",
-                format!("Ciao {} {},", signature.first_name, signature.last_name).as_str(),
-                "premi sul link sotto per <b>verificare la tua firma</b>.",
-                format!("<br/><a href=\"{}\">{}</a>", validation_url, validation_url).as_str(),
-            ]
-            .concat(),
-        )
+        .body(body)
         .map_err(|_| signature.id)
+}
+
+fn send_email(
+    config: EmailConfiguration,
+    signature: models::Signature,
+    subject: String,
+    body: String
+) -> Result<(), uuid::Uuid> {
+    let email = build_email(&signature, &config, subject, body)?;
+
+    let creds = Credentials::new(config.username, config.password);
+    let mailer = SmtpTransport::from_url(&config.url)
+    .map_err(|_| signature.id)?
+    .credentials(creds)
+    .build();
+
+    mailer
+    .send(&email)
+    .map_err(|_| signature.id)
+    .map(|_| ())
 }
 
 pub fn send_confirmation_email(
     signature: models::Signature,
 ) -> Result<(), uuid::Uuid> {
     let config = EmailConfiguration::read_env().expect("Error reading SMTP configuration");
-    let email = build_email(&signature, &config, generate_auth_token(&signature))?;
+    let validation_url = format!("{}/verifica-email/{}", config.website_url, generate_auth_token(&signature));
 
-    let creds = Credentials::new(config.username, config.password);
-    let mailer = SmtpTransport::from_url(&config.url)
-        .map_err(|_| signature.id)?
-        .credentials(creds)
-        .build();
+    let body = [
+        "<h1>Lettera aperta contro gli eccessi di Piracy Shield</h1>",
+        format!("Ciao {} {},", signature.first_name, signature.last_name).as_str(),
+        " premi sul link sotto per <b>verificare la tua firma</b>.",
+        format!("<br/><a href=\"{}\">{}</a>", validation_url, validation_url).as_str(),
+    ]
+    .concat();
 
-    mailer
-        .send(&email)
-        .map_err(|_| signature.id)
-        .map(|_| ())
+    return send_email(config, signature, "Verifica la firma. Lettera aperta contro gli eccessi di Piracy Shield".into(), body)
+}
+
+pub fn send_sign_email(
+    signature: models::Signature,
+) -> Result<(), uuid::Uuid> {
+    let config = EmailConfiguration::read_env().expect("Error reading SMTP configuration");
+    let revoke_url = format!("{}/revoca-email/{}", config.website_url, generate_auth_token(&signature));
+
+    let body = [
+        "<h1>Lettera aperta contro gli eccessi di Piracy Shield</h1>",
+        format!("Ciao {} {},", signature.first_name, signature.last_name).as_str(),
+        " ti confermiamo che la tua firma è stata <b>registrata correttamente<b>.",
+        "<br><br><br><br><br>",
+        "Se per qualsiasi motivo desideri <b>rimuovere</b> la tua firma puoi premere il link sotto",
+        format!("<br/><a href=\"{}\">{}</a>", revoke_url, revoke_url).as_str(),
+    ]
+    .concat();
+
+    return send_email(config, signature, "Conferma firma. Lettera aperta contro gli eccessi di Piracy Shield".into(), body)
 }
 
 pub fn generate_auth_token(signature: &models::Signature) -> String {
