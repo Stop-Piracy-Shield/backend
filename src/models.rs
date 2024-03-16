@@ -16,9 +16,9 @@ pub struct Signature {
     pub last_name: String,
     org: Option<String>,
     pub email: String,
-    created_at: NaiveDateTime,
-    verified: bool,
-    verified_at: Option<NaiveDateTime>,
+    pub created_at: NaiveDateTime,
+    pub verified: bool,
+    pub verified_at: Option<NaiveDateTime>,
 }
 
 #[derive(Serialize, Queryable, Selectable)]
@@ -29,8 +29,27 @@ pub struct PublicSignature {
     first_name: String,
     last_name: String,
     org: Option<String>,
+    #[serde(with = "public_date_format")]
     created_at: NaiveDateTime,
     message: Option<String>,
+}
+
+mod public_date_format {
+    use chrono::NaiveDateTime;
+    use rocket::serde::Serializer;
+
+    const FORMAT: &'static str = "%d-%m-%Y %H:%M";
+
+    pub fn serialize<S>(
+        date: &NaiveDateTime,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+    S: Serializer,
+    {
+        let s = format!("{}", date.format(FORMAT));
+        serializer.serialize_str(&s)
+    }
 }
 
 #[derive(FromForm, Deserialize, Queryable, Insertable)]

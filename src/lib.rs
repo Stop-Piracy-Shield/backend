@@ -7,6 +7,7 @@ use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 
 use lettre::{Message, SmtpTransport, Transport};
+use chrono::NaiveDateTime;
 
 struct EmailConfiguration {
     from: String,
@@ -29,8 +30,9 @@ impl EmailConfiguration {
 fn build_email(
     signature: &models::Signature,
     config: &EmailConfiguration,
+    auth_token: String
 ) -> Result<Message, uuid::Uuid> {
-    let validation_url = format!("https://example.com/verifica-email?token={}", signature.id);
+    let validation_url = format!("https://example.com/verifica-email?token={}", auth_token);
 
     Message::builder()
         .from(
@@ -63,7 +65,7 @@ pub fn send_confirmation_email(
     signature: models::Signature,
 ) -> Result<(), uuid::Uuid> {
     let config = EmailConfiguration::read_env().expect("Error reading SMTP configuration");
-    let email = build_email(&signature, &config)?;
+    let email = build_email(&signature, &config, generate_auth_token(&signature))?;
 
     let creds = Credentials::new(config.username, config.password);
     let mailer = SmtpTransport::from_url(&config.url)
@@ -75,4 +77,19 @@ pub fn send_confirmation_email(
         .send(&email)
         .map_err(|_| signature.id)
         .map(|_| ())
+}
+
+pub fn generate_auth_token(signature: &models::Signature) -> String {
+    let data: NaiveDateTime;
+    if signature.verified {
+        data = signature.verified_at.unwrap();
+    } else {
+        data = signature.created_at;
+    }
+
+    return signature.id.to_string() + &sha256::digest(
+        signature.id.to_string()
+        + &data.and_utc().timestamp_nanos_opt().unwrap().to_string()
+        + &signature.email
+    );
 }

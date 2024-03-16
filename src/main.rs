@@ -10,7 +10,8 @@ use rocket_sync_db_pools::database;
 use uuid::Uuid;
 
 use stop_piracy_shield::schema::signatures;
-use stop_piracy_shield::{models::*, send_confirmation_email};
+use stop_piracy_shield::{models::*, send_confirmation_email, generate_auth_token};
+
 
 #[database("postgres")]
 struct DbConnection(diesel::PgConnection);
@@ -114,15 +115,14 @@ async fn new_signature(
     }
 }
 
-#[put("/signatures/<signature_id>/verify")]
+#[put("/signatures/<auth_token>/verify")]
 async fn verify_signature(
     conn: DbConnection,
-    signature_id: &str,
+    auth_token: &str,
 ) -> Result<Json<Value>, (Status, Json<Value>)> {
     use crate::signatures::dsl::*;
 
-    let signature_uuid = Uuid::parse_str(signature_id)
-        .map_err(|_| error_response!("Invalid signature id format", Status::BadRequest))?;
+    let signature_uuid = validate_auth_token(&conn, auth_token, false).await?;
 
     conn.run(move |c: &mut diesel::PgConnection| {
         diesel::update(signatures.find(signature_uuid))
@@ -144,7 +144,14 @@ async fn get_signature_by_id(
 ) -> Result<Json<PublicSignature>, (Status, Json<Value>)> {
     use crate::signatures::dsl::*;
 
-    let signature_uuid = Uuid::parse_str(signature_id)
+    if signature_id.chars().count() < 36 {
+        return Err(error_response!(
+            "Invalid signature id format",
+            Status::BadRequest
+        ));
+    }
+
+    let signature_uuid = Uuid::parse_str(&signature_id[..36])
         .map_err(|_| error_response!("Invalid signature id format", Status::BadRequest))?;
     conn.run(move |c: &mut diesel::PgConnection| {
         signatures
@@ -172,6 +179,48 @@ async fn run_migrations(rocket: Rocket<Build>) -> Rocket<Build> {
         .await;
 
     rocket
+}
+
+async fn validate_auth_token(
+    conn: &DbConnection,
+    auth_token: &str,
+    expected_verified_state: bool
+) -> Result<uuid::Uuid, (Status, Json<Value>)> {
+    use crate::signatures::dsl::*;
+
+    if auth_token.chars().count() != 100 {
+        return Err(error_response!(
+            "Invalid auth token format",
+            Status::Forbidden
+        ));
+    }
+
+    let signature_uuid = Uuid::parse_str(&auth_token[..36])
+    .map_err(|_| error_response!("Invalid signature id format", Status::BadRequest))?;
+
+    let signature = match conn.run(move |c: &mut diesel::PgConnection| {
+        signatures
+        .find(signature_uuid)
+        .select(Signature::as_select())
+        .first::<Signature>(c)
+    }).await {
+        Ok(signature) => signature,
+        Err(_err) => return Err(error_response!(
+            "Auth token is invalid",
+            Status::Forbidden
+        )),
+    };
+
+    let generated_auth_token = generate_auth_token(&signature);
+
+    if auth_token.eq(&generated_auth_token) && expected_verified_state == signature.verified {
+        Ok(signature.id)
+    } else {
+        Err(error_response!(
+            "Auth token is invalid",
+            Status::Forbidden
+        ))
+    }
 }
 
 #[launch]
