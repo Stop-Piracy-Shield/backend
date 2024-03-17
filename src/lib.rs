@@ -6,15 +6,15 @@ use std::env::VarError;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 
-use lettre::{Message, SmtpTransport, Transport};
 use chrono::NaiveDateTime;
+use lettre::{Message, SmtpTransport, Transport};
 
 struct EmailConfiguration {
     from: String,
     url: String,
     username: String,
     password: String,
-    website_url: String
+    website_url: String,
 }
 
 impl EmailConfiguration {
@@ -33,7 +33,7 @@ fn build_email(
     signature: &models::Signature,
     config: &EmailConfiguration,
     subject: String,
-    body: String
+    body: String,
 ) -> Result<Message, uuid::Uuid> {
     Message::builder()
         .from(
@@ -58,27 +58,26 @@ fn send_email(
     config: EmailConfiguration,
     signature: models::Signature,
     subject: String,
-    body: String
+    body: String,
 ) -> Result<(), uuid::Uuid> {
     let email = build_email(&signature, &config, subject, body)?;
 
     let creds = Credentials::new(config.username, config.password);
     let mailer = SmtpTransport::from_url(&config.url)
-    .map_err(|_| signature.id)?
-    .credentials(creds)
-    .build();
+        .map_err(|_| signature.id)?
+        .credentials(creds)
+        .build();
 
-    mailer
-    .send(&email)
-    .map_err(|_| signature.id)
-    .map(|_| ())
+    mailer.send(&email).map_err(|_| signature.id).map(|_| ())
 }
 
-pub fn send_confirmation_email(
-    signature: models::Signature,
-) -> Result<(), uuid::Uuid> {
+pub fn send_confirmation_email(signature: models::Signature) -> Result<(), uuid::Uuid> {
     let config = EmailConfiguration::read_env().expect("Error reading SMTP configuration");
-    let validation_url = format!("{}/verifica-email/{}", config.website_url, generate_auth_token(&signature));
+    let validation_url = format!(
+        "{}/verifica-email/{}",
+        config.website_url,
+        generate_auth_token(&signature)
+    );
 
     let body = [
         "<h1>Lettera aperta contro gli eccessi di Piracy Shield</h1>",
@@ -88,14 +87,21 @@ pub fn send_confirmation_email(
     ]
     .concat();
 
-    return send_email(config, signature, "Verifica la firma. Lettera aperta contro gli eccessi di Piracy Shield".into(), body)
+    return send_email(
+        config,
+        signature,
+        "Verifica la firma. Lettera aperta contro gli eccessi di Piracy Shield".into(),
+        body,
+    );
 }
 
-pub fn send_sign_email(
-    signature: models::Signature,
-) -> Result<(), uuid::Uuid> {
+pub fn send_sign_email(signature: models::Signature) -> Result<(), uuid::Uuid> {
     let config = EmailConfiguration::read_env().expect("Error reading SMTP configuration");
-    let revoke_url = format!("{}/revoca-email/{}", config.website_url, generate_auth_token(&signature));
+    let revoke_url = format!(
+        "{}/revoca-email/{}",
+        config.website_url,
+        generate_auth_token(&signature)
+    );
 
     let body = [
         "<h1>Lettera aperta contro gli eccessi di Piracy Shield</h1>",
@@ -107,7 +113,12 @@ pub fn send_sign_email(
     ]
     .concat();
 
-    return send_email(config, signature, "Conferma firma. Lettera aperta contro gli eccessi di Piracy Shield".into(), body)
+    return send_email(
+        config,
+        signature,
+        "Conferma firma. Lettera aperta contro gli eccessi di Piracy Shield".into(),
+        body,
+    );
 }
 
 pub fn generate_auth_token(signature: &models::Signature) -> String {
@@ -118,9 +129,10 @@ pub fn generate_auth_token(signature: &models::Signature) -> String {
         data = signature.created_at;
     }
 
-    return signature.id.to_string() + &sha256::digest(
-        signature.id.to_string()
-        + &data.and_utc().timestamp_nanos_opt().unwrap().to_string()
-        + &signature.email
-    );
+    return signature.id.to_string()
+        + &sha256::digest(
+            signature.id.to_string()
+                + &data.and_utc().timestamp_nanos_opt().unwrap().to_string()
+                + &signature.email,
+        );
 }

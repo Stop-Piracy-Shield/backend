@@ -40,12 +40,9 @@ mod public_date_format {
 
     const FORMAT: &'static str = "%d-%m-%Y %H:%M";
 
-    pub fn serialize<S>(
-        date: &NaiveDateTime,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(date: &NaiveDateTime, serializer: S) -> Result<S::Ok, S::Error>
     where
-    S: Serializer,
+        S: Serializer,
     {
         let s = format!("{}", date.format(FORMAT));
         serializer.serialize_str(&s)
