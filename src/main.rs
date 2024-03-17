@@ -5,7 +5,7 @@ use rocket::{Build, Rocket};
 
 #[macro_use]
 extern crate rocket;
-use rocket::serde::json::{Json, Value};
+use rocket::serde::json::{json, Json, Value};
 use rocket_sync_db_pools::database;
 use uuid::Uuid;
 
@@ -31,6 +31,20 @@ macro_rules! error_response {
             rocket::serde::json::Json(rocket::serde::json::json!({ "result": false, "error": $msg }))
         )
     };
+}
+
+#[get("/signatures/count")]
+async fn get_signatures_count(conn: DbConnection) -> Json<Value> {
+    use crate::signatures::dsl::*;
+
+    let count = conn.run(|c: &mut diesel::PgConnection| {
+        signatures
+            .filter(verified.eq(true))
+            .count()
+            .get_result::<i64>(c)
+            .expect("Error loading signature count")
+    }).await;
+    Json(json!({"ok": true, "count": count}))
 }
 
 #[get("/signatures")]
@@ -264,6 +278,7 @@ fn rocket() -> _ {
         .mount(
             "/",
             routes![
+                get_signatures_count,
                 get_signatures,
                 new_signature,
                 verify_signature,
